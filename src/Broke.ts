@@ -1,33 +1,36 @@
 import axios, { AxiosPromise, AxiosResponse } from 'axios'
 import * as cheerio from 'cheerio';
 
-export interface LinkResult {
+export interface ResponseData {
     href: string
     level: number
     linkedFrom: string
     broken: Boolean,
     reason?: any,
-    status?: number
+    status: number
     statusText?: string
-    links: LinkResult[]
+    links: ResponseData[]
     malformed: Boolean
     secure: boolean
 }
 
 export class Broke {
 
+    linkDepthMin: number = 0
     linkDepth: number = 2
+    verboseMode: Boolean = false
     // used by collectLinks
     private rootUrl: URL
     private visited: URL[] = []
     
-    constructor(rootUrl: URL, linkDepth: number = 2) {
+    constructor(rootUrl: URL, linkDepth: number = 2, verbose: Boolean = false) {
         this.rootUrl = rootUrl
         this.linkDepth = linkDepth
+        this.verboseMode = verbose
     }
     
-    async check(): Promise<LinkResult[]> {
-        return this.fetch(this.rootUrl, 0, this.rootUrl)
+    async check(): Promise<ResponseData[]> {
+        return this.fetch(this.rootUrl, this.linkDepthMin, this.rootUrl)
         .then( results => {
             return results.filter( link => {
                 return !!link
@@ -39,14 +42,16 @@ export class Broke {
     }
     
     // recursive promise tree
-    async fetch(currentUrl: URL, currentLevel: number, linkedFrom: URL): Promise<LinkResult[]> {
+    async fetch(currentUrl: URL, currentLevel: number, linkedFrom: URL): Promise<ResponseData[]> {
         
-        var visited = this.alreadyVisited(currentUrl)
+        var seen = this.alreadyVisited(currentUrl)
 
-        if (visited) {
+        if (seen) {
             return []
         } else {
-            // console.log(`${currentLevel} currentUrl: ${currentUrl}`)
+            if(this.verboseMode) {
+                console.log(`${currentLevel} currentUrl: ${currentUrl}`)
+            }
             this.visit(currentUrl)
         }
 
@@ -59,33 +64,39 @@ export class Broke {
             })
         
         if (res == null) {
-            // console.log(`broken link: ${currentUrl.href} was unreachable: ${failReason ?? 'unknown'}`)
-            var brokenLink = [this.resultFor(currentUrl, currentLevel, linkedFrom, undefined, `${currentUrl.href} was unreachable: ${failReason ?? 'unknown'}`)]
-            return Promise.resolve(brokenLink)
+            if(this.verboseMode) {
+                console.log(`broken link: ${currentUrl.href} was unreachable: ${failReason ?? 'unknown'}`)
+            }
+            var brokenLink = [this.resultFor(currentUrl, currentLevel, linkedFrom, undefined, `${failReason ?? 'unknown'}`)]
+            return brokenLink
         }
             
         var links = this.collectLinks(res)
         
-        var results: LinkResult[] = [this.resultFor(currentUrl, currentLevel, linkedFrom, res)]
+        var currentResponseData: ResponseData[] = [this.resultFor(currentUrl, currentLevel, linkedFrom, res)]
         
         var nextLevel = currentLevel + 1
-        var childResults: LinkResult[] = []
+        
+        var nextResponseData: ResponseData[] = []
+        
         if (nextLevel < this.linkDepth) {
-            childResults = (await Promise.all(links.map( (linkUrl, i, allChildren) => {
+            nextResponseData = await Promise.all(links.map( (linkUrl) => {
                 return this.fetch(linkUrl, currentLevel + 1, currentUrl)
                     .catch( reason => {
                         // FYI this shouldn't happen for happy path cases
-                        throw new Error(`a child was unreachable: ${reason}`)
+                        throw new Error(`Unexpected Failure: ${reason}`)
                     })
-                })))
-                .map( (val, i, all):LinkResult => {
-                    return val.pop()!
-                })
+            }))
+            .then( res => {
+                return res.flat()
+            })
         } else {
-            // console.log(`${currentUrl} has no links`)
+            if(this.verboseMode) {
+                console.log(`${currentUrl} has no links`)
+            }
         }
         
-        return results.concat(childResults)
+        return currentResponseData.concat(nextResponseData)
     }
     
     // the link scraper
@@ -115,32 +126,34 @@ export class Broke {
     }
     
     // metadata structure
-    resultFor(url: URL, level: number, linkedFrom: URL, res?: AxiosResponse, reason?: any): LinkResult {
+    resultFor(url: URL, level: number, linkedFrom: URL, res?: AxiosResponse, reason?: any): ResponseData {
         return {
-            href: url.href,
+            href: url.toString(),
             level: level,
-            linkedFrom: linkedFrom.href,
+            linkedFrom: linkedFrom.toString(),
             broken: res == null,
             reason: reason,
-            status: res?.status ?? -1,
-            statusText: res?.statusText ?? 'N/A',
+            status: res?.status ?? 0,
+            statusText: res?.statusText ?? 'n/a',
             links: [],
             malformed: false,
-            secure: url.port == "443"
+            secure: url.protocol == "https:"
         }
     }
 
     visit(url: URL) {
         this.visited.push(url)
-        // console.log(`${this.visited.length} visiting ${url.href}`)
+        if(this.verboseMode) {
+            console.log(`${this.visited.length} visited`)
+        }
     }
     
     alreadyVisited(url: URL): Boolean {
         
-        var visited = this.visited.find((found, i, allVisits): Boolean => {
+        var seen = this.visited.find((found): Boolean => {
             return url.href == found.href
         })
         
-        return !!visited
+        return !!seen
     }
 }
