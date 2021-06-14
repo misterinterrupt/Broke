@@ -1,4 +1,4 @@
-import axios, { AxiosPromise, AxiosResponse } from 'axios'
+import axios, { AxiosError, AxiosPromise, AxiosResponse } from 'axios'
 import * as cheerio from 'cheerio';
 
 export interface ResponseData {
@@ -7,7 +7,7 @@ export interface ResponseData {
     linkedFrom: string
     broken: Boolean,
     reason?: any,
-    status: number
+    status: string
     statusText?: string
     links: ResponseData[]
     malformed: Boolean
@@ -16,21 +16,24 @@ export interface ResponseData {
 
 export class Broke {
 
-    linkDepthMin: number = 0
+    linkDepthStart: number = 0
     linkDepth: number = 2
     verboseMode: Boolean = false
+    debugMode: Boolean = false
+    
     // used by collectLinks
     private rootUrl: URL
     private visited: URL[] = []
     
-    constructor(rootUrl: URL, linkDepth: number = 2, verbose: Boolean = false) {
+    constructor(rootUrl: URL, linkDepth: number = 2, verbose: Boolean = false, debug: Boolean = false) {
         this.rootUrl = rootUrl
         this.linkDepth = linkDepth
         this.verboseMode = verbose
+        this.debugMode = debug
     }
     
     async check(): Promise<ResponseData[]> {
-        return this.fetch(this.rootUrl, this.linkDepthMin, this.rootUrl)
+        return this.fetch(this.rootUrl, this.linkDepthStart, this.rootUrl)
         .then( results => {
             return results.filter( link => {
                 return !!link
@@ -49,31 +52,40 @@ export class Broke {
         if (seen) {
             return []
         } else {
-            if(this.verboseMode) {
+            if(this.debugMode) {
                 console.log(`${currentLevel} currentUrl: ${currentUrl}`)
             }
             this.visit(currentUrl)
         }
 
-        var failReason: String | null = null
-        var res = await axios.get(currentUrl.href)
-            .catch( reason => {
-                // console.log("axios error")
-                failReason = reason
-                return null
-            })
+        var error: AxiosError|null = null
+        var res: AxiosResponse|null = null
         
-        if (res == null) {
-            if(this.verboseMode) {
-                console.log(`broken link: ${currentUrl.href} was unreachable: ${failReason ?? 'unknown'}`)
+        try {
+            res = await axios.get(currentUrl.href)
+        } catch(resError) {
+            if (resError && resError.response) {
+                // console.log("Broken Link ")
+                error = resError
+                res = resError.response
+            } else {
+                // console.log("Axios error ")
+                throw new Error("Failed to fetch link, Axios returned no error response");
             }
-            var brokenLink = [this.resultFor(currentUrl, currentLevel, linkedFrom, undefined, `${failReason ?? 'unknown'}`)]
+        }
+        
+        if (error) {
+            if(this.debugMode) {
+                console.log(`broken link: ${currentUrl.href} was unreachable: ${error}`)
+            }
+            var brokenLink = [this.resultFor(currentUrl, currentLevel, linkedFrom, res!, error)]
+            // important that we return the result here or pay extra..
             return brokenLink
         }
             
-        var links = this.collectLinks(res)
+        var links = this.collectLinks(res!)
         
-        var currentResponseData: ResponseData[] = [this.resultFor(currentUrl, currentLevel, linkedFrom, res)]
+        var currentResponseData: ResponseData[] = [this.resultFor(currentUrl, currentLevel, linkedFrom, res!)]
         
         var nextLevel = currentLevel + 1
         
@@ -84,14 +96,14 @@ export class Broke {
                 return this.fetch(linkUrl, currentLevel + 1, currentUrl)
                     .catch( reason => {
                         // FYI this shouldn't happen for happy path cases
-                        throw new Error(`Unexpected Failure: ${reason}`)
+                        throw new Error(`Unexpected Failure while scraping links: \n${reason}`)
                     })
             }))
             .then( res => {
                 return res.flat()
             })
         } else {
-            if(this.verboseMode) {
+            if(this.debugMode) {
                 console.log(`${currentUrl} has no links`)
             }
         }
@@ -126,24 +138,25 @@ export class Broke {
     }
     
     // metadata structure
-    resultFor(url: URL, level: number, linkedFrom: URL, res?: AxiosResponse, reason?: any): ResponseData {
-        return {
+    resultFor(url: URL, level: number, linkedFrom: URL, res: AxiosResponse, err?: AxiosError): ResponseData {
+        var linkResult =  {
             href: url.toString(),
             level: level,
             linkedFrom: linkedFrom.toString(),
-            broken: res == null,
-            reason: reason,
-            status: res?.status ?? 0,
-            statusText: res?.statusText ?? 'n/a',
+            broken: !!err,
+            reason: err?.message ?? 'n/a',
+            status: res.status.toString() ?? 'none',
+            statusText: res.statusText ?? 'none',
             links: [],
             malformed: false,
             secure: url.protocol == "https:"
         }
+        return linkResult
     }
 
     visit(url: URL) {
         this.visited.push(url)
-        if(this.verboseMode) {
+        if(this.debugMode) {
             console.log(`${this.visited.length} visited`)
         }
     }
